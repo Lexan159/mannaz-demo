@@ -347,6 +347,37 @@ const CW_CONFIG = {
   const bubble=$('#bubble'),win=$('#window'),msgBox=$('#messages'),input=$('#input'),sendBtn=$('#send'),welcome=$('#welcome'),quick=$('#quick'),badge=$('#badge'),notif=$('#notif');
   let isOpen=false,isEnlarged=false,isLoading=false,messages=[];
 
+  // Stały identyfikator rozmowy dla tej karty przeglądarki.
+  // Dzięki temu Flowise nie traktuje każdej wiadomości jako nowego, oderwanego pytania.
+  function makeSessionId(){return 'mannaz_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10)}
+  let sessionId;
+  try{
+    sessionId=sessionStorage.getItem('cw_mannaz_session_id');
+    if(!sessionId){sessionId=makeSessionId();sessionStorage.setItem('cw_mannaz_session_id',sessionId)}
+  }catch(e){sessionId=makeSessionId()}
+
+  function flowiseHistory(){
+    // Flowise Prediction API oczekuje ról: userMessage / apiMessage.
+    // Poprzednia wersja wysyłała user / assistant, przez co Flowise mógł ignorować historię.
+    return messages.slice(-12).map(m=>({
+      role:m.role==='bot'?'apiMessage':'userMessage',
+      content:m.text
+    }));
+  }
+
+  function isShortContextReply(text){
+    const t=text.trim().toLowerCase();
+    return /^(tak|ta|taa|t|yes|yep|jasne|ok|okej|dobra|dawaj|pokaż|pokaz|poproszę|poprosze|chcę|chce|może|moze|nie|no|inne|inny|dalej)$/.test(t);
+  }
+
+  function contextualQuestion(text, history){
+    // Awaryjny bezpiecznik dla krótkich odpowiedzi typu „tak”.
+    // Dzięki temu nawet jeśli flow nie ma poprawnie podpiętej pamięci, model dostaje minimalny kontekst w samym pytaniu.
+    if(!isShortContextReply(text)||!history.length)return text;
+    const ctx=history.slice(-6).map(h=>(h.role==='apiMessage'?'Asystent':'Klient')+': '+h.content).join('\n');
+    return 'To jest kontynuacja rozmowy z klientem sklepu Mannaz. Nie zaczynaj rozmowy od nowa. Odpowiedz na aktualną krótką wiadomość klienta na podstawie kontekstu.\n\nKontekst rozmowy:\n'+ctx+'\n\nAktualna wiadomość klienta: '+JSON.stringify(text);
+  }
+
   setTimeout(()=>{badge.classList.add('show')},2000);
   setTimeout(()=>{notif.classList.add('show')},2800);
   setTimeout(()=>{hideNotif()},12000);
@@ -401,7 +432,14 @@ const CW_CONFIG = {
     addMsg('user',text);input.value='';input.style.height='42px';
     sendBtn.disabled=true;isLoading=true;showTyping();
     try{
-      const res=await fetch(C.apiUrl+C.chatflowId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:text,overrideConfig:{}})});
+      const history=flowiseHistory().slice(0,-1);
+      const payload={
+        question:contextualQuestion(text,history),
+        chatId:sessionId,
+        overrideConfig:{sessionId},
+        history
+      };
+      const res=await fetch(C.apiUrl+C.chatflowId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const data=await res.json();hideTyping();
       addMsg('bot',data.text||data.response||'Przepraszam, coś poszło nie tak.');
     }catch(e){hideTyping();addMsg('bot','Nie udało się połączyć. Spróbuj ponownie.')}
